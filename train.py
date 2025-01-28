@@ -30,17 +30,17 @@ lt.monkey_patch()
 BATCH_SIZE = 512
 MAX_EPOCHS = 500
 
-STUDY_NAME = "Exploration"
+STUDY_NAME = "WindowS1"
 HYPERPARAMS = dict(
     patience = [10],
     sched_patience = [5],
     lr = [0.01, 0.001],
-    hid_dim = [1, 2, 4],
-    num_layers = [4, 8],
-    use_edges = [True, False],
+    hid_dim = [4, 8],
+    num_layers = [4],
+    use_edges = [True],
     edges_directed = [False],
     # data_path = ["data/processed_data_W12_S5.pt", "data/processed_data_W12_S10.pt", "data/processed_data_W24_S2.pt"]
-    data_path = ["data/processed_data_W12_S5.pt"]
+    data_path = ["data/processed_windowed_data_W12_S1.pt"]
 )
 
 
@@ -405,14 +405,16 @@ def main():
             trial = study.ask()
             study_logger.info(f"Trial {i}")
             score = train_and_test(trial, i, study_dir)
-            study.tell(trial, score)
-            study_logger.info(f"Score for trial {i}: {score}")
             
             # Save to CSV
             trial_data = {key: value for key, value in trial.params.items()}
             trial_data.update({"Trial": i, "Score": score})
             scores_df = pd.concat([scores_df, pd.DataFrame([trial_data])], ignore_index=True)
             scores_df.to_csv(os.path.join(study_dir, "scores.csv"), index=False)
+            
+            study.tell(trial, score)
+            study_logger.info(f"Score for trial {i}: {score}")
+            
         except RuntimeError:
             break
     
