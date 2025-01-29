@@ -36,19 +36,17 @@ lt.monkey_patch()
 BATCH_SIZE = 512
 MAX_EPOCHS = 500
 
-STUDY_NAME = "LSTMOverlap"
+STUDY_NAME = "DoubleWindow"
 HYPERPARAMS = dict(
     patience=[10],
     sched_patience=[5],
     lr=[0.01, 0.001],
     hidden_dims=[[4, 4, 4]],
     decoder_dims=[[4, 4]],
-    lstm_layers=[2],
-    window_size=[24],
     use_edges=[True],
     edges_directed=[False],
     # data_path = ["data/processed_data_W12_S5.pt", "data/processed_data_W12_S10.pt", "data/processed_data_W24_S2.pt"]
-    data_path=["data/processed_windowed_data_W24_S1_STRIDE12.pt"],
+    data_path=["data/processed_doublewindowed_data_W24W4_S1_STRIDE18.pt"],
 )
 
 
