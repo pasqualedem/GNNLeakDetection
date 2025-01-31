@@ -1,7 +1,7 @@
 #%% Enhanced Model Definition
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GATConv, global_mean_pool
+from torch_geometric.nn import GATv2Conv, global_mean_pool
 from torch_geometric.nn import BatchNorm
 
 
@@ -9,7 +9,7 @@ class FirstLayer(nn.Module):
     def __init__(self, node_in, window_size, hidden_size, lstm_layers=None, edge_in=None):
         super(FirstLayer, self).__init__()
         
-        # LSTM layer or GATConv
+        # LSTM layer or GATv2Conv
         self.window_size = window_size
         self.lstm_layers = lstm_layers
         if lstm_layers is not None:
@@ -18,7 +18,7 @@ class FirstLayer(nn.Module):
                                 num_layers=lstm_layers, 
                                 batch_first=True)
         else:
-            self.layer = GATConv(node_in, hidden_size, heads=4, edge_dim=edge_in)
+            self.layer = GATv2Conv(node_in, hidden_size, heads=4, edge_dim=edge_in)
         
     
     def forward(self, x, edge_index, edge_attr):
@@ -39,7 +39,7 @@ class FirstLayer(nn.Module):
 
 
 class LeakDetector(torch.nn.Module):
-    def __init__(self, node_in, hid_dim=1, num_layers=4, hidden_dims=None, edge_in=None, decoder_dims=None, lstm_layers=None, window_size=None):
+    def __init__(self, node_in, hid_dim=None, num_layers=4, hidden_dims=None, edge_in=None, decoder_dims=None, lstm_layers=None, window_size=None, **kwargs):
         super().__init__()
         self.edge_in = edge_in
         
@@ -58,20 +58,20 @@ class LeakDetector(torch.nn.Module):
         
         # Intermediate layers
         for i in range(1, len(hidden_dims)):
-            self.encoder.append(GATConv(hidden_dims[i-1] * 4, hidden_dims[i], heads=4, edge_dim=edge_in))
+            self.encoder.append(GATv2Conv(hidden_dims[i-1] * 4, hidden_dims[i], heads=4, edge_dim=edge_in))
             self.encoder.append(BatchNorm(hidden_dims[i] * 4))
         
         # Final layer (single head)
-        self.encoder.append(GATConv(hidden_dims[-1] * 4, hidden_dims[-1], heads=1, edge_dim=edge_in))
+        self.encoder.append(GATv2Conv(hidden_dims[-1] * 4, hidden_dims[-1], heads=1, edge_dim=edge_in))
         
         # Decoder (reverse of encoder)
         self.decoder = torch.nn.ModuleList()
         for i in range(len(decoder_dims[:-1])):
-            self.decoder.append(GATConv(decoder_dims[i], decoder_dims[i-1], edge_dim=edge_in))
-            self.decoder.append(BatchNorm(decoder_dims[i-1]))
+            self.decoder.append(GATv2Conv(decoder_dims[i], decoder_dims[i+1], edge_dim=edge_in))
+            self.decoder.append(BatchNorm(decoder_dims[i+1]))
         
         # Final decoder layer to reconstruct input
-        self.decoder.append(GATConv(decoder_dims[-1], node_in, edge_dim=edge_in))
+        self.decoder.append(GATv2Conv(decoder_dims[-1], node_in, edge_dim=edge_in))
         
         self.dropout = torch.nn.Dropout(0.2)
 
@@ -98,3 +98,11 @@ class LeakDetector(torch.nn.Module):
         
         # Final reconstruction layer (no activation)
         return self.decoder[-1](x_recon, edge_index, edge_attr)
+
+
+def get_model(node_in, edge_in, **kwargs):
+    return LeakDetector(
+        node_in=node_in,
+        edge_in=edge_in,
+        **kwargs
+    )
