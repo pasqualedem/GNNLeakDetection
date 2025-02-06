@@ -18,7 +18,7 @@ lt.monkey_patch()
 TRIAL_DIR = "results/study_2025-01-30_09-57-24_DoubleWindow/trial_1"
 
 
-def test(trial_dir, model, x_test_data, val_batch, test_labels, num_nodes, logger):
+def test(trial_dir, model, loss_fn, x_test_data, val_batch, test_labels, num_nodes, logger):
     test_batch = next(
         iter(DataLoader(x_test_data, batch_size=len(x_test_data), shuffle=False))
     )

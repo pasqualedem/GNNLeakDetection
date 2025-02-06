@@ -1,5 +1,6 @@
 
 
+import os
 import einops
 import numpy as np
 import torch
@@ -19,7 +20,7 @@ def direct_edges(graphs):
 def get_data(data_path, edges_directed, logger):
     processed_data = torch.load(data_path, weights_only=True)
     node_features = processed_data["node_features"]
-    edge_features = processed_data["edge_features"]
+    edge_features = processed_data.get("edge_features", None)
     window_labels = processed_data["window_labels"]
     window_scenarios = processed_data["window_scenarios"]
     edge_index = processed_data["edge_index"]
@@ -34,19 +35,35 @@ def get_data(data_path, edges_directed, logger):
 
     # Set random seed
     np.random.seed(42)
-    test_scenarios = np.random.choice(
-        list(leak_scenarios), TEST_SCENARIOS, replace=False
-    )
-    val_scenarios = np.random.choice(
-        list(non_leak_scenarios - set(test_scenarios.tolist())),
-        VAL_SCENARIOS,
-        replace=False,
-    )
-    train_scenarios = list(
-        set(scenarios.tolist())
-        - set(test_scenarios.tolist())
-        - set(val_scenarios.tolist())
-    )
+    
+    split_file = "data/split.txt"
+    # Load data split if exists
+    if os.path.exists(split_file):
+        with open(split_file, "r") as f:
+            train_scenarios = eval(f.readline().split(":")[1])
+            val_scenarios = eval(f.readline().split(":")[1])
+            test_scenarios = eval(f.readline().split(":")[1])
+        logger.info(f"Loaded data split from {split_file}")
+    else:
+        test_scenarios = np.random.choice(
+            list(leak_scenarios), TEST_SCENARIOS, replace=False
+        )
+        val_scenarios = np.random.choice(
+            list(non_leak_scenarios - set(test_scenarios.tolist())),
+            VAL_SCENARIOS,
+            replace=False,
+        )
+        train_scenarios = list(
+            set(scenarios.tolist())
+            - set(test_scenarios.tolist())
+            - set(val_scenarios.tolist())
+        )
+        # Save split to txt file
+        logger.info(f"Saving data split to {split_file}")
+        with open(split_file, "w") as f:
+            f.write(f"train: {sorted(list(train_scenarios))}\n")
+            f.write(f"val: {sorted(val_scenarios.tolist())}\n")
+            f.write(f"test: {sorted(test_scenarios.tolist())}\n")
 
     # Identify normal windows (no leaks)
     normal_windows = (window_labels == 0).all(dim=1)
@@ -70,42 +87,51 @@ def get_data(data_path, edges_directed, logger):
     test_features = scaler.transform(node_features[test_idx].numpy())
 
     edge_scaler = StandardScaler()
-    train_edge_features = edge_scaler.fit_transform(edge_features[train_idx].numpy())
-    val_edge_features = edge_scaler.transform(edge_features[val_idx].numpy())
-    test_edge_features = edge_scaler.transform(edge_features[test_idx].numpy())
+    train_edge_features = edge_scaler.fit_transform(edge_features[train_idx].numpy()) if edge_features is not None else None
+    val_edge_features = edge_scaler.transform(edge_features[val_idx].numpy()) if edge_features is not None else None
+    test_edge_features = edge_scaler.transform(edge_features[test_idx].numpy()) if edge_features is not None else None
 
     # Convert to tensors
     x_train = torch.tensor(train_features, dtype=torch.float32)
     x_val = torch.tensor(val_features, dtype=torch.float32)
     x_test = torch.tensor(test_features, dtype=torch.float32)
 
-    x_edge_train = torch.tensor(train_edge_features, dtype=torch.float32)
-    x_edge_val = torch.tensor(val_edge_features, dtype=torch.float32)
-    x_edge_test = torch.tensor(test_edge_features, dtype=torch.float32)
+    if edge_features is not None:
+        x_edge_train = torch.tensor(train_edge_features, dtype=torch.float32)
+        x_edge_val = torch.tensor(val_edge_features, dtype=torch.float32)
+        x_edge_test = torch.tensor(test_edge_features, dtype=torch.float32)
+    else:
+        x_edge_train = None
+        x_edge_val = None
+        x_edge_test = None
 
     # Reshape back to [time, nodes, features]
     x_train = einops.rearrange(x_train, "w (f n) -> w n f", n=num_nodes)
     x_val = einops.rearrange(x_val, "w (f n) -> w n f", n=num_nodes)
     x_test = einops.rearrange(x_test, "w (f n) -> w n f", n=num_nodes)
 
-    # Reshape back to [time, edges, features]
-    x_edge_train = einops.rearrange(x_edge_train, "w (f e) -> w e f", e=num_edges)
-    x_edge_val = einops.rearrange(x_edge_val, "w (f e) -> w e f", e=num_edges)
-    x_edge_test = einops.rearrange(x_edge_test, "w (f e) -> w e f", e=num_edges)
+    if edge_features is not None:
+        # Reshape back to [time, edges, features]
+        x_edge_train = einops.rearrange(x_edge_train, "w (f e) -> w e f", e=num_edges)
+        x_edge_val = einops.rearrange(x_edge_val, "w (f e) -> w e f", e=num_edges)
+        x_edge_test = einops.rearrange(x_edge_test, "w (f e) -> w e f", e=num_edges)
 
     logger.info(f"x_train: {x_train}")
     logger.info(f"x_val: {x_val}")
     logger.info(f"x_test: {x_test}")
     logger.info("----")
-    logger.info(f"x_edge_train: {x_edge_train}")
-    logger.info(f"x_edge_val: {x_edge_val}")
-    logger.info(f"x_edge_test: {x_edge_test}")
+    if edge_features is not None:
+        logger.info(f"x_edge_train: {x_edge_train}")
+        logger.info(f"x_edge_val: {x_edge_val}")
+        logger.info(f"x_edge_test: {x_edge_test}")
+    else:
+        logger.info("No edge features")
 
     # Create graph data
     train_data = [
         Data(
             x=x_train[i],  # Training uses only normal data,
-            edge_attr=x_edge_train[i],
+            edge_attr=x_edge_train[i] if edge_features is not None else None,
             edge_index=edge_index,
             y=x_train[i],
         )
@@ -115,7 +141,7 @@ def get_data(data_path, edges_directed, logger):
     val_data = [
         Data(
             x=x_val[i],
-            edge_attr=x_edge_val[i],
+            edge_attr=x_edge_val[i] if edge_features is not None else None,
             edge_index=edge_index,
             y=x_val[i],
         )
@@ -126,7 +152,7 @@ def get_data(data_path, edges_directed, logger):
         Data(
             x=x_test[i],
             edge_index=edge_index,
-            edge_attr=x_edge_test[i],
+            edge_attr=x_edge_test[i] if edge_features is not None else None,
             y=x_test[i],
         )
         for i in tqdm(range(len(x_test)))

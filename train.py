@@ -13,6 +13,7 @@ from optuna.samplers import GridSampler
 
 from data import get_data
 from logger import get_logger
+from loss import get_loss
 from model import get_model
 
 import lovely_tensors as lt
@@ -25,22 +26,27 @@ lt.monkey_patch()
 BATCH_SIZE = 512
 MAX_EPOCHS = 500
 
-STUDY_NAME = "GATv2ConvSearch"
+STUDY_NAME = "OldData"
 HYPERPARAMS = dict(
     patience=[10],
     sched_patience=[5],
-    lr=[0.1, 0.01, 0.001, 0.005, 0.0001],
-    hidden_dims=[[8, 8, 4], [8, 8, 4, 4], [8, 8, 4, 2], [8, 4, 2, 1], [8, 16, 16, 8], [32, 32]],
+    lr=[0.001],
+    hidden_dims=[[8, 8, 4]],
     # decoder_dims=[[4, 8]],
-    use_edges=[True],
+    use_edges=[False],
     edges_directed=[False],
+    loss = ["mae"],
     # data_path = ["data/processed_data_W12_S5.pt", "data/processed_data_W12_S10.pt", "data/processed_data_W24_S2.pt"]
-    data_path=["data/processed_doublewindowed_data_W24W4_S1_STRIDE18.pt"],
+    # data_path=["data/processed_windowed_data_W24_S1_STRIDE18.pt"],
+    # data_path=["data/processed_doublewindowed_data_W24W4_S1_STRIDE18.pt"],
+    # data_path = ["data/processed_doublewindowed_data_W48W4_S1_STRIDE24.pt"],
+    # data_path = ["data/processed_doublewindowed_data_W256W4_S1_STRIDE128.pt"]
+    data_path = ["data/processed_doublewindowed_olddata_W24W4_S1_STRIDE12.pt"]
 )
 
 
 def train(
-    trial_dir, model, train_loader, val_batch, optimizer, scheduler, patience, logger
+    trial_dir, model, loss_fn, train_loader, val_batch, optimizer, scheduler, patience, logger
 ):
     cur_patience = 0
     best_val_loss = float("inf")
@@ -67,7 +73,7 @@ def train(
         model.eval()
         with torch.no_grad():
             val_recon = model(val_batch)
-            val_loss = torch.mean(torch.abs(val_batch.y - val_recon))
+            val_loss = loss_fn(val_batch.y, val_recon)
 
         scheduler.step(val_loss)
 
@@ -125,12 +131,13 @@ def train_and_test(trial, i, study_dir):
     window_size = params.get("window_size")
     decay = params.get("weight_decay", 1e-4)
 
+    loss_fn = get_loss(params["loss"])
     lr = params["lr"]
     sched_patience = params["sched_patience"]
     use_edges = params["use_edges"]
 
     node_dim = train_data[0].x.shape[1]
-    edge_dim = train_data[0].edge_attr.shape[1]
+    edge_dim = train_data[0].edge_attr.shape[1] if use_edges else None
 
     # %% Model Initialization
     model = get_model(
@@ -158,6 +165,7 @@ def train_and_test(trial, i, study_dir):
     train(
         trial_dir,
         model,
+        loss_fn,
         train_loader,
         val_batch,
         optimizer,
@@ -165,7 +173,7 @@ def train_and_test(trial, i, study_dir):
         patience,
         logger,
     )
-    score = test(trial_dir, model, test_data, val_batch, test_labels, num_nodes, logger)
+    score = test(trial_dir, model, loss_fn, test_data, val_batch, test_labels, num_nodes, logger)
 
     return score
 
