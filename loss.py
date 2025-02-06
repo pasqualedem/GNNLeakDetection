@@ -15,5 +15,7 @@ def get_loss(loss, loss_reduction="mean"):
         return torch.nn.HuberLoss(reduction=loss_reduction)
     elif loss == "max":
         return MaxLoss()
+    elif loss == "binary_cross_entropy":
+        return torch.nn.BCEWithLogitsLoss(reduction=loss_reduction)
     else:
         raise NotImplementedError

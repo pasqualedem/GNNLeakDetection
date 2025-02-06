@@ -1,15 +1,16 @@
 import einops
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 import torch
-from sklearn.metrics import confusion_matrix, precision_recall_curve, precision_recall_fscore_support, roc_auc_score, roc_curve
+from sklearn.metrics import classification_report, confusion_matrix, precision_recall_curve, precision_recall_fscore_support, roc_auc_score, roc_curve, f1_score
 from torch_geometric.loader import DataLoader
 import yaml
 
 from data import get_data
 from logger import get_logger
-
+from torch_geometric.nn import global_max_pool
 import lovely_tensors as lt
 
 from model import get_model
@@ -18,10 +19,7 @@ lt.monkey_patch()
 TRIAL_DIR = "results/study_2025-01-30_09-57-24_DoubleWindow/trial_1"
 
 
-def test(trial_dir, model, loss_fn, x_test_data, val_batch, test_labels, num_nodes, logger):
-    test_batch = next(
-        iter(DataLoader(x_test_data, batch_size=len(x_test_data), shuffle=False))
-    )
+def test_anomaly(trial_dir, model, loss_fn, test_batch, val_batch, test_labels, num_nodes, tracker):
     # Load best model
     model.load_state_dict(torch.load(f"{trial_dir}/best_model.pt", weights_only=True))
 
@@ -63,13 +61,13 @@ def test(trial_dir, model, loss_fn, x_test_data, val_batch, test_labels, num_nod
 
     y_pred_random = torch.randint(0, 2, size=(len(y_true_graph),)).numpy().astype(int)
 
-    logger.info("\n=== Detection Performance ===")
+    tracker.info("\n=== Detection Performance ===")
     precision, recall, f1, _ = precision_recall_fscore_support(
         y_true_graph, y_pred_graph, average="binary"
     )
-    logger.info(f"Precision: {precision:.3f}")
-    logger.info(f"Recall:    {recall:.3f}")
-    logger.info(f"F1-score:  {f1:.3f}")
+    tracker.info(f"Precision: {precision:.3f}")
+    tracker.info(f"Recall:    {recall:.3f}")
+    tracker.info(f"F1-score:  {f1:.3f}")
 
     # Calculate precision, recall, and FPR for random predictions
     precision_random, recall_random, _ = precision_recall_curve(
@@ -79,7 +77,7 @@ def test(trial_dir, model, loss_fn, x_test_data, val_batch, test_labels, num_nod
 
     # ROC-AUC
     roc_auc = roc_auc_score(y_true_graph, window_scores_graph)
-    logger.info(f"ROC-AUC:   {roc_auc:.3f}")
+    tracker.info(f"ROC-AUC:   {roc_auc:.3f}")
 
     cm = confusion_matrix(y_true_graph, y_pred_graph)
 
@@ -158,6 +156,49 @@ def test(trial_dir, model, loss_fn, x_test_data, val_batch, test_labels, num_nod
     return f1
 
 
+def test(model, loss_fn, val_batch, tracker, metric="loss", graph_classification=False):
+    print("\n================ EVALUATION ================")
+    with torch.no_grad():
+        y_pred = model(val_batch)
+    
+    if graph_classification:
+        tracker.info(f"GRAPH LEVEL METRICS")
+    else:
+        tracker.info(f"NODE LEVEL METRICS")
+    
+    y_pred_leak = y_pred > 0.0
+    score = f1_score(val_batch.y, y_pred_leak, zero_division=0.0)
+    tracker.info(f"F1Score: {score:.3f}")
+    tracker.info("\n"+str(pd.DataFrame(confusion_matrix(val_batch.y, y_pred_leak), index=["Actual 0", "Actual 1"], columns=["Predicted 0", "Predicted 1"])))
+    tracker.info("\n================================")
+    loss = loss_fn(y_pred, val_batch.y.float())
+    
+    node_score = None
+    if not graph_classification:
+        tracker.info(f"GRAPH LEVEL METRICS")
+        node_score = score
+        y_pred_node = global_max_pool(y_pred_leak, val_batch.batch)
+        y_true_node = global_max_pool(val_batch.y, val_batch.batch)
+        score = f1_score(y_true_node, y_pred_node, zero_division=0.0)
+        tracker.info(f"F1Score: {score:.3f}")
+        tracker.info("\n"+str(pd.DataFrame(confusion_matrix(y_true_node, y_pred_node), index=["Actual 0", "Actual 1"], columns=["Predicted 0", "Predicted 1"])))
+        tracker.info("\n================================")
+    
+    tracker.log_metrics({
+        "loss": loss,
+        "GraphF1Score": score,
+        "NodeF1Score": node_score
+        }
+    )
+    
+    if metric == "loss":
+        return loss
+    elif metric == "score":
+        return score
+    else:
+        raise ValueError(f"Invalid metric: {metric}")
+
+
 if __name__ == "__main__":    
     # Load hyperparameters yaml
     with open(f"{TRIAL_DIR}/hyperparams.yaml", "r") as f:
@@ -182,4 +223,4 @@ if __name__ == "__main__":
     )
 
     logger.info("\n=== Test Performance ===")
-    test(TRIAL_DIR, model, x_test_data, val_batch, test_labels, num_nodes, logger)
+    test_anomaly(TRIAL_DIR, model, x_test_data, val_batch, test_labels, num_nodes, logger)

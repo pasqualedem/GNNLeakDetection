@@ -1,4 +1,8 @@
 *.pt
 *.pth
+*.zip
+*.parquet
 
 data
+results
+wandb

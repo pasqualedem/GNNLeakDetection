@@ -17,7 +17,7 @@ def direct_edges(graphs):
         graphs[i].edge_attr = graphs[i].edge_attr[:num_edges, :]
 
 
-def get_data(data_path, edges_directed, logger):
+def get_data(data_path, edges_directed, logger, anomaly=False, graph_classification=False):
     processed_data = torch.load(data_path, weights_only=True)
     node_features = processed_data["node_features"]
     edge_features = processed_data.get("edge_features", None)
@@ -73,8 +73,15 @@ def get_data(data_path, edges_directed, logger):
     val_mask = torch.tensor(np.isin(window_scenarios, val_scenarios))
     test_mask = torch.tensor(np.isin(window_scenarios, test_scenarios))
 
-    train_idx = torch.where(train_mask[:, 0] * normal_windows)[0]
-    val_idx = torch.where(val_mask[:, 0] * normal_windows)[0]
+    if anomaly:
+        train_mask = train_mask[:, 0] * normal_windows
+        val_mask = val_mask[:, 0] * normal_windows
+    else:
+        train_mask = train_mask[:, 0]
+        val_mask = val_mask[:, 0]
+        
+    train_idx = torch.where(train_mask)[0]
+    val_idx = torch.where(val_mask)[0]
     test_idx = torch.where(test_mask[:, 0])[0]
     logger.info(f"train_idx: {train_idx}")
     logger.info(f"val_idx: {val_idx}")
@@ -126,6 +133,14 @@ def get_data(data_path, edges_directed, logger):
         logger.info(f"x_edge_test: {x_edge_test}")
     else:
         logger.info("No edge features")
+        
+    if graph_classification:
+        window_labels = window_labels.any(dim=1).long()
+
+    train_labels = window_labels[train_idx] if not anomaly else x_train
+    val_labels = window_labels[val_idx] if not anomaly else x_val
+    test_labels = window_labels[test_idx]
+    inc_test_labels = test_labels if not anomaly else x_test
 
     # Create graph data
     train_data = [
@@ -133,7 +148,7 @@ def get_data(data_path, edges_directed, logger):
             x=x_train[i],  # Training uses only normal data,
             edge_attr=x_edge_train[i] if edge_features is not None else None,
             edge_index=edge_index,
-            y=x_train[i],
+            y=train_labels[i],
         )
         for i in tqdm(range(len(x_train)))
     ]
@@ -143,17 +158,17 @@ def get_data(data_path, edges_directed, logger):
             x=x_val[i],
             edge_attr=x_edge_val[i] if edge_features is not None else None,
             edge_index=edge_index,
-            y=x_val[i],
+            y=val_labels[i],
         )
         for i in tqdm(range(len(x_val)))
     ]
     logger.info("Val data created")
-    x_test_data = [
+    test_data = [
         Data(
             x=x_test[i],
             edge_index=edge_index,
             edge_attr=x_edge_test[i] if edge_features is not None else None,
-            y=x_test[i],
+            y=inc_test_labels[i],
         )
         for i in tqdm(range(len(x_test)))
     ]
@@ -163,8 +178,6 @@ def get_data(data_path, edges_directed, logger):
         logger.info("Directing edges")
         direct_edges(train_data)
         direct_edges(val_data)
-        direct_edges(x_test_data)
+        direct_edges(test_data)
 
-    test_labels = window_labels[test_idx]
-
-    return train_data, val_data, (x_test_data, test_labels), (num_nodes, num_edges)
+    return train_data, val_data, (test_data, test_labels), (num_nodes, num_edges)

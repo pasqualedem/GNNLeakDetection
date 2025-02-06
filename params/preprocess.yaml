@@ -1,0 +1,10 @@
+data_path: 'data/graph_olddata_torch.pt'
+
+window_size: 24
+stride: 12
+subsample: 1
+doublewindow_size: 4
+subsize: null
+# features: ["mean", "max", "min", "std", "perm_entropy", "fourier_entropy", "pacf"]
+features: ["mean", "max", "min", "std"]
+suffix: "old"

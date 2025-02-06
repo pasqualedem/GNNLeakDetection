@@ -1,7 +1,8 @@
 #%% Enhanced Model Definition
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GATv2Conv, global_mean_pool
+import torch.nn.functional as F
+from torch_geometric.nn import GATv2Conv, GATConv, global_mean_pool
 from torch_geometric.nn import BatchNorm
 
 
@@ -38,7 +39,7 @@ class FirstLayer(nn.Module):
         return out
 
 
-class LeakDetector(torch.nn.Module):
+class AnomalyLeakDetector(torch.nn.Module):
     def __init__(self, node_in, hid_dim=None, num_layers=4, hidden_dims=None, edge_in=None, decoder_dims=None, lstm_layers=None, window_size=None, **kwargs):
         super().__init__()
         self.edge_in = edge_in
@@ -100,8 +101,75 @@ class LeakDetector(torch.nn.Module):
         return self.decoder[-1](x_recon, edge_index, edge_attr)
 
 
-def get_model(node_in, edge_in, **kwargs):
-    return LeakDetector(
+class GATConvModel(torch.nn.Module):
+    def __init__(self, node_in, edge_in, hidden_size=32, target_size=1, heads=1, dropout=0.0, num_layers=2, graph_classification=False, **kwargs):
+        super().__init__()
+        
+        self.graph_classification = graph_classification
+        self.node_encoder = nn.Linear(node_in, hidden_size)
+        if edge_in:
+            self.edge_encoder = nn.Linear(edge_in, hidden_size)
+        
+        self.hidden_size = hidden_size
+        self.num_features = node_in
+        self.num_edge_features = edge_in
+        self.target_size = target_size
+        self.num_layers = num_layers
+        
+        # Dynamically create GATConv layers
+        self.convs = nn.ModuleList()
+        self.convs.append(GATConv(self.hidden_size, self.hidden_size, edge_dim=hidden_size, dropout=dropout, residual=True))
+        
+        for _ in range(num_layers - 2):
+            self.convs.append(GATConv(self.hidden_size, self.hidden_size, edge_dim=hidden_size, heads=heads, dropout=dropout, residual=True))
+        
+        self.convs.append(GATConv(self.hidden_size, self.hidden_size, edge_dim=hidden_size, heads=heads, dropout=dropout, residual=True))
+
+        if self.graph_classification:
+            # Additional layers
+            self.graph_norm = nn.LayerNorm(self.hidden_size*heads)
+            self.graph_act = nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        self.linear = nn.Linear(self.hidden_size*heads, self.target_size)
+        
+        for param in self.parameters():
+            if param.dim() > 1:  # Apply to weights (not biases)
+                nn.init.kaiming_normal_(param)
+
+    def forward(self, data):
+        x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
+        x = self.node_encoder(x)
+        if self.num_edge_features is not None:
+            edge_attr = self.edge_encoder(edge_attr)
+        
+
+        for i, conv in enumerate(self.convs):
+            if self.num_edge_features is not None:
+                x = conv(x, edge_index, edge_attr=edge_attr)  # Add edge features here
+            else:
+                x = conv(x, edge_index)
+            if i < len(self.convs) - 1:  # Apply activation and dropout for all but the last layer
+                x = F.leaky_relu(x)
+                x = F.dropout(x, training=self.training)
+
+        if self.graph_classification:
+            x = global_mean_pool(x, data.batch)
+            x = self.graph_norm(x)
+            x = self.graph_act(x)
+        x = self.linear(x)
+        return x.squeeze(1)
+
+
+
+MODELS = {
+    "AnomalyLeakDetector": AnomalyLeakDetector,
+    "GNNLeakDetector": GATConvModel,
+}
+
+
+def get_model(name, node_in, edge_in, **kwargs):
+    class_name = MODELS[name]
+    
+    return class_name(
         node_in=node_in,
         edge_in=edge_in,
         **kwargs
