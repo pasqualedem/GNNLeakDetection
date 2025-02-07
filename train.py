@@ -228,6 +228,8 @@ def train_and_test(trial, i, study_dir, hyperparams):
             score = test_anomaly(trial_dir, model, loss_fn, test_batch, val_batch, test_labels, num_nodes, tracker)
         else:
             score = test(model, loss_fn, test_batch, tracker, metric="score", graph_classification=graph_classification)
+            
+    tracker.end()
 
     return score
 
