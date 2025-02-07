@@ -44,7 +44,7 @@ class EarlyStopping:
             best = f"Not best, patience: {self.cur_patience}"
             if self.cur_patience >= self.patience:
                 logger.info("Early stopping")
-                return True
+                return True, ""
         return False, best
 
 def train_anomaly(
