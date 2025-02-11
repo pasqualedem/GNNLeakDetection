@@ -1,16 +1,16 @@
-#%% Enhanced Model Definition
 import torch
+import inspect
 import torch.nn as nn
+import torch_geometric.nn as geo_nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATv2Conv, GATConv, global_mean_pool
+from torch_geometric.nn import GATv2Conv, GATConv, global_mean_pool, TransformerConv
 from torch_geometric.nn import BatchNorm
 
-
 class FirstLayer(nn.Module):
-    def __init__(self, node_in, window_size, hidden_size, lstm_layers=None, edge_in=None):
+    def __init__(self, node_in, window_size, hidden_size, lstm_layers=None, edge_in=None, gnn_layer=GATv2Conv):
         super(FirstLayer, self).__init__()
         
-        # LSTM layer or GATv2Conv
+        # LSTM layer or gnn_layer
         self.window_size = window_size
         self.lstm_layers = lstm_layers
         if lstm_layers is not None:
@@ -19,7 +19,7 @@ class FirstLayer(nn.Module):
                                 num_layers=lstm_layers, 
                                 batch_first=True)
         else:
-            self.layer = GATv2Conv(node_in, hidden_size, heads=4, edge_dim=edge_in)
+            self.layer = gnn_layer(node_in, hidden_size, heads=4, edge_dim=edge_in)
         
     
     def forward(self, x, edge_index, edge_attr):
@@ -40,7 +40,8 @@ class FirstLayer(nn.Module):
 
 
 class AnomalyLeakDetector(torch.nn.Module):
-    def __init__(self, node_in, hid_dim=None, num_layers=4, hidden_dims=None, edge_in=None, decoder_dims=None, lstm_layers=None, window_size=None, **kwargs):
+    def __init__(self, node_in, hid_dim=None, num_layers=4, hidden_dims=None, edge_in=None, decoder_dims=None, lstm_layers=None, window_size=None, gnn_layer="GATv2Conv", **kwargs):
+    
         super().__init__()
         self.edge_in = edge_in
         
@@ -59,20 +60,20 @@ class AnomalyLeakDetector(torch.nn.Module):
         
         # Intermediate layers
         for i in range(1, len(hidden_dims)):
-            self.encoder.append(GATv2Conv(hidden_dims[i-1] * 4, hidden_dims[i], heads=4, edge_dim=edge_in))
+            self.encoder.append(gnn_layer(hidden_dims[i-1] * 4, hidden_dims[i], heads=4, edge_dim=edge_in))
             self.encoder.append(BatchNorm(hidden_dims[i] * 4))
         
         # Final layer (single head)
-        self.encoder.append(GATv2Conv(hidden_dims[-1] * 4, hidden_dims[-1], heads=1, edge_dim=edge_in))
+        self.encoder.append(gnn_layer(hidden_dims[-1] * 4, hidden_dims[-1], heads=1, edge_dim=edge_in))
         
         # Decoder (reverse of encoder)
         self.decoder = torch.nn.ModuleList()
         for i in range(len(decoder_dims[:-1])):
-            self.decoder.append(GATv2Conv(decoder_dims[i], decoder_dims[i+1], edge_dim=edge_in))
+            self.decoder.append(gnn_layer(decoder_dims[i], decoder_dims[i+1], edge_dim=edge_in))
             self.decoder.append(BatchNorm(decoder_dims[i+1]))
         
         # Final decoder layer to reconstruct input
-        self.decoder.append(GATv2Conv(decoder_dims[-1], node_in, edge_dim=edge_in))
+        self.decoder.append(gnn_layer(decoder_dims[-1], node_in, edge_dim=edge_in))
         
         self.dropout = torch.nn.Dropout(0.2)
 
@@ -101,9 +102,12 @@ class AnomalyLeakDetector(torch.nn.Module):
         return self.decoder[-1](x_recon, edge_index, edge_attr)
 
 
-class GATConvModel(torch.nn.Module):
-    def __init__(self, node_in, edge_in, hidden_size=32, target_size=1, heads=1, dropout=0.0, num_layers=2, graph_classification=False, **kwargs):
+class GNNModel(torch.nn.Module):
+    def __init__(self, node_in, edge_in, hidden_size=32, target_size=1, heads=1, dropout=0.0, num_layers=2, graph_classification=False, gnn_layer="GATv2Conv",  **kwargs):
         super().__init__()
+        
+        
+        gnn_layer = getattr(geo_nn, gnn_layer)
         
         self.graph_classification = graph_classification
         self.node_encoder = nn.Linear(node_in, hidden_size)
@@ -116,14 +120,31 @@ class GATConvModel(torch.nn.Module):
         self.target_size = target_size
         self.num_layers = num_layers
         
-        # Dynamically create GATConv layers
+        # Dynamically create GNN layers
         self.convs = nn.ModuleList()
-        self.convs.append(GATConv(self.hidden_size, self.hidden_size, edge_dim=hidden_size, dropout=dropout, residual=True))
+        
+        # Dynamically add args
+        additional_kw_args = {}
+        if edge_in is not None:
+            additional_kw_args["edge_dim"] = edge_in
+        # Check inputs of layer
+        signature = inspect.signature(gnn_layer)
+        # See if it has dropout
+        if "dropout" in signature.parameters:
+            additional_kw_args["dropout"] = dropout
+        # See if it has residual
+        if "residual" in signature.parameters:
+            additional_kw_args["residual"] = True
+        # See if it has heads
+        if "heads" in signature.parameters:
+            additional_kw_args["heads"] = heads
+        
+        self.convs.append(gnn_layer(self.hidden_size, self.hidden_size, **additional_kw_args))
         
         for _ in range(num_layers - 2):
-            self.convs.append(GATConv(self.hidden_size, self.hidden_size, edge_dim=hidden_size, heads=heads, dropout=dropout, residual=True))
+            self.convs.append(gnn_layer(self.hidden_size, self.hidden_size, **additional_kw_args))
         
-        self.convs.append(GATConv(self.hidden_size, self.hidden_size, edge_dim=hidden_size, heads=heads, dropout=dropout, residual=True))
+        self.convs.append(gnn_layer(self.hidden_size, self.hidden_size, **additional_kw_args))
 
         if self.graph_classification:
             # Additional layers
@@ -162,7 +183,7 @@ class GATConvModel(torch.nn.Module):
 
 MODELS = {
     "AnomalyLeakDetector": AnomalyLeakDetector,
-    "GNNLeakDetector": GATConvModel,
+    "GNNLeakDetector": GNNModel,
 }
 
 
