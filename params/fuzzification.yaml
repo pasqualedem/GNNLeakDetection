@@ -1,0 +1,11 @@
+data_path: 'data/graph_olddata_torch.pt'
+
+window_size: 24
+stride: 12
+subsample: 1
+subsize: null
+features: ["mean"]
+fuzzy:
+  n_clusters: 3
+  
+suffix: "old"

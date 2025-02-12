@@ -1,0 +1,29 @@
+study_name: "Fuzzy"
+
+anomaly: [False]
+graph_classification: [True, False]
+
+batch_size: [512]
+max_epochs: [500]
+patience: [10]
+sched_patience: [1]
+lr: [0.001]
+model:
+  name: ["GNNLeakDetector"]
+  use_edges: [False]
+  num_layers: [4]
+  hidden_size: [64]
+  gnn_layer: ["GENConv"]
+edges_directed: [False]
+loss: ["binary_cross_entropy"]
+# data_path: ["data/processed_data_W12_S5.pt", "data/processed_data_W12_S10.pt", "data/processed_data_W24_S2.pt"]
+# data_path: ["data/processed_windowed_data_W24_S1_STRIDE18.pt"],
+# data_path: ["data/processed_doublewindowed_data_W24W4_S1_STRIDE18.pt"],
+# data_path: ["data/processed_doublewindowed_data_W48W4_S1_STRIDE24.pt"],
+# data_path: ["data/processed_doublewindowed_data_W256W4_S1_STRIDE128.pt"]
+# data_path: ["data/processed_doublewindowed_olddata_W24W4_S1_STRIDE12.pt"]
+data_path: ["data/fuzzified_data_W24_S1_STRIDE12old.pt"]
+##
+tracker:
+  project: ["FuzzyGNNLeak"]
+  tags: [[Fuzzy]]

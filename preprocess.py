@@ -1,3 +1,7 @@
+from enum import StrEnum
+import os
+from sklearn.cluster import KMeans
+from sklearn.discriminant_analysis import StandardScaler
 import torch
 import click
 import numpy as np
@@ -10,7 +14,123 @@ import statsmodels.api as sm
 
 import lovely_tensors as lt
 import yaml
+
+from logger import get_logger
 lt.monkey_patch()
+
+
+def train_val_test_split(window_labels, window_scenarios, logger, anomaly=False):    
+    scenarios = window_scenarios.unique()
+    leak_scenarios = window_scenarios[window_labels.any(dim=1)].unique()
+    non_leak_scenarios = set(scenarios.tolist()) - set(leak_scenarios.tolist())
+
+    VAL_SCENARIOS, TEST_SCENARIOS = 100, 100
+
+    # Set random seed
+    np.random.seed(42)
+    
+    split_file = "data/split.txt"
+    # Load data split if exists
+    if os.path.exists(split_file):
+        with open(split_file, "r") as f:
+            train_scenarios = eval(f.readline().split(":")[1])
+            val_scenarios = eval(f.readline().split(":")[1])
+            test_scenarios = eval(f.readline().split(":")[1])
+        logger.info(f"Loaded data split from {split_file}")
+    else:
+        test_scenarios = np.random.choice(
+            list(leak_scenarios), TEST_SCENARIOS, replace=False
+        )
+        val_scenarios = np.random.choice(
+            list(non_leak_scenarios - set(test_scenarios.tolist())),
+            VAL_SCENARIOS,
+            replace=False,
+        )
+        train_scenarios = list(
+            set(scenarios.tolist())
+            - set(test_scenarios.tolist())
+            - set(val_scenarios.tolist())
+        )
+        # Save split to txt file
+        logger.info(f"Saving data split to {split_file}")
+        with open(split_file, "w") as f:
+            f.write(f"train: {sorted(list(train_scenarios))}\n")
+            f.write(f"val: {sorted(val_scenarios.tolist())}\n")
+            f.write(f"test: {sorted(test_scenarios.tolist())}\n")
+
+    # Identify normal windows (no leaks)
+    normal_windows = (window_labels == 0).all(dim=1)
+    logger.info(f"Normal windows: {normal_windows.sum()}/{len(normal_windows)}")
+
+    train_mask = torch.tensor(np.isin(window_scenarios, train_scenarios))
+    val_mask = torch.tensor(np.isin(window_scenarios, val_scenarios))
+    test_mask = torch.tensor(np.isin(window_scenarios, test_scenarios))
+
+    if anomaly:
+        train_mask = train_mask[:, 0] * normal_windows
+        val_mask = val_mask[:, 0] * normal_windows
+    else:
+        train_mask = train_mask[:, 0]
+        val_mask = val_mask[:, 0]
+        
+    train_idx = torch.where(train_mask)[0]
+    val_idx = torch.where(val_mask)[0]
+    test_idx = torch.where(test_mask[:, 0])[0]
+    logger.info(f"train_idx: {train_idx}")
+    logger.info(f"val_idx: {val_idx}")
+    logger.info(f"test_idx: {test_idx}")
+    
+    return train_idx, val_idx, test_idx
+
+
+import numpy as np
+
+def check_standardization(data, tol=1e-4):
+    """
+    Checks if the given dataset is standardized (zero mean, unit variance).
+    
+    Parameters:
+    - data: np.ndarray - The standardized data.
+    - tol: float - The tolerance level for checking mean and std deviation.
+    
+    Returns:
+    - bool: True if the data is properly standardized, False otherwise.
+    """
+    if isinstance(data, torch.Tensor):
+        data = data.numpy()
+    
+    mean = np.mean(data, axis=0)
+    std = np.std(data, axis=0)
+
+    mean_check = np.all(np.abs(mean) < tol)
+    
+    std_check = np.abs(std - 1) < tol
+    zero_std_check = np.abs(std) < tol
+    std_check = np.all(zero_std_check | std_check)
+
+    if np.any(zero_std_check):
+        print("Zero standard deviation detected!")
+
+    return mean_check and std_check
+
+
+def normalize_data(
+    train_features,
+    val_features,
+    test_features
+):
+        # Normalize using training normal data
+    scaler = StandardScaler()
+    train_features = scaler.fit_transform(train_features.numpy())
+    val_features = scaler.transform(val_features.numpy())
+    test_features = scaler.transform(test_features.numpy())
+
+    # Convert to tensors
+    x_train = torch.tensor(train_features, dtype=torch.float32)
+    x_val = torch.tensor(val_features, dtype=torch.float32)
+    x_test = torch.tensor(test_features, dtype=torch.float32)
+        
+    return x_train, x_val, x_test
 
 
 def make_undirected(graph_data):
@@ -160,6 +280,76 @@ def feature_extraction(graph_data, window_size, stride, subsample, features):
         new_graph["edge_features"] = edge_features
     
     return new_graph
+
+
+class Fuzzifier:
+    def __init__(self, n_clusters, n_features, X_train):
+        self.n_clusters = n_clusters
+        self.n_features = n_features
+        # Initialize cluster centers using KMeans
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        kmeans.fit(X_train)
+        self.cluster_centers = torch.tensor(kmeans.cluster_centers_)
+
+        # Compute standard deviation for each cluster  
+        labels = kmeans.labels_
+        cluster_std_devs = []
+        for i in range(n_clusters):
+            cluster_points = X_train[labels == i]  # Select points in cluster i
+            std_dev = torch.std(cluster_points, dim=0)  # Compute std deviation per feature
+            cluster_std_devs.append(std_dev)
+            
+        self.std_devs = torch.cat(cluster_std_devs)
+
+    def fuzzify(self, X):        
+        u = torch.zeros((X.shape[0], self.n_clusters))
+        for i in range(self.n_clusters):
+            u[:, i] = torch.exp(-torch.sum((X - self.cluster_centers[i])*2, axis=1) / (2 * self.std_devs[i]*2))
+        return u / torch.sum(u, axis=1, keepdims=True)
+    
+    
+def fuzzify(graph_data, params, logger):
+    n_clusters = params['n_clusters']
+    logger.info(f"Fuzzifying with {n_clusters} clusters")
+    
+    num_nodes = graph_data['window_labels'].shape[1]
+    node_features = graph_data['node_features']
+    # Concat nodes
+    node_features = einops.rearrange(node_features, 'b (f n) -> (b n) f', n=num_nodes)
+    n_features = node_features.shape[1]
+    
+    train_idx = graph_data['train_idx']
+    x_train = node_features[train_idx]
+    
+    fuzzifier = Fuzzifier(n_clusters, n_features, x_train)
+    logger.info(f"Node Cluster centers: {fuzzifier.cluster_centers}")
+    logger.info(f"Node Std Devs       : {fuzzifier.std_devs}")
+    
+    node_features = fuzzifier.fuzzify(node_features)
+    # Reshape back to [time, features, nodes]
+    node_features = einops.rearrange(node_features, '(b n) f -> b (f n)', n=num_nodes)
+    
+    graph_data['node_features'] = node_features
+    
+    if "edge_attr" in graph_data:
+        num_edges = graph_data['edge_index'].shape[1]
+        edge_features = graph_data['edge_features']
+        edge_features = einops.rearrange(edge_features, 'b (f n) -> (b n) f', n=num_edges)
+        
+        n_features = edge_features.shape[1]
+        
+        x_edge_train = edge_features[train_idx]
+        fuzzifier = Fuzzifier(n_clusters, n_features, x_edge_train)
+        logger.info(f"Edge Cluster centers: {fuzzifier.cluster_centers}")
+        logger.info(f"Edge Std Devs       : {fuzzifier.std_devs}")
+        edge_features = fuzzifier.fuzzify(edge_features)
+        # Reshape back to [time, features, edges]
+        edge_features = einops.rearrange(edge_features, '(b n) f -> b (f n)', n=num_edges)
+        
+        graph_data['edge_features'] = edge_features
+        
+    return graph_data
+
     
 @click.command()
 @click.option('--parameters', type=str, help="Parameters file")
@@ -170,63 +360,101 @@ def main(parameters):
     stride = hyperparams['stride']
     subsample = hyperparams['subsample']
     subsize = hyperparams['subsize']
-    doublewindow_size = hyperparams['doublewindow_size']
+    doublewindow_size = hyperparams.get('doublewindow_size')
     data_path = hyperparams['data_path']
     suffix = hyperparams.get('suffix', '')
-    features = hyperparams['features']
+    features = hyperparams.get('features')
+    fuzzy = hyperparams.get('fuzzy')
     
-    print(f"Using window size {window_size}, stride {stride}, subsample {subsample} and double window size {doublewindow_size}")
+    prefix = "processed" if fuzzy is None else "fuzzified"
+    
+    double_string = "" if doublewindow_size is None else f"_2W{doublewindow_size}"
+    subsize_string = "" if subsize is None else f"_SUBSIZE{subsize}"
+    data_name = f"data/{prefix}_data_W{window_size}{double_string}_S{subsample}_STRIDE{stride}{subsize_string}{suffix}.pt"
+    logger = get_logger("preprocess", log_file=f"{data_name}.log")
+    
+    logger.info(f"Using window size {window_size}, stride {stride}, subsample {subsample} and double window size {doublewindow_size}")
     
     #%% Data Loading and Preprocessing
-    print("Loading and preprocessing data...")
+    logger.info("Loading and preprocessing data...")
     graph_data = torch.load(data_path)
     num_nodes = graph_data['node_features'].shape[1]
     num_edges = graph_data['edge_index'].shape[0]
     
-    print("Graph_data:")
+    logger.info("Graph_data:")
     for k, v in graph_data.items():
-        print(f"{k}: {v}")
+        logger.info(f"{k}: {v}")
     
     graph_data = make_undirected(graph_data)
     num_nodes = graph_data['node_features'].shape[1]
     num_edges = graph_data['edge_index'].shape[0]
-    print("Graph_data after making edges undirected:")
-    print(f"Number of nodes: {num_nodes}")
-    print(f"Number of edges: {num_edges}")
-    print(graph_data)
+    logger.info("Graph_data after making edges undirected:")
+    logger.info(f"Number of nodes: {num_nodes}")
+    logger.info(f"Number of edges: {num_edges}")
+    logger.info(graph_data)
     
     if subsize is not None:
-        print(f"\nSubsampling to {subsize}")
+        logger.info(f"\nSubsampling to {subsize}")
         graph_data['node_features'] = graph_data['node_features'][:subsize]
         if "edge_attr" in graph_data:
             graph_data['edge_attr'] = graph_data['edge_attr'][:subsize]
         graph_data['scenario'] = graph_data['scenario'][:subsize]
         graph_data['y'] = graph_data['y'][:subsize]
-        print(f"Subsized node features: {graph_data['node_features']}")
+        logger.info(f"Subsized node features: {graph_data['node_features']}")
         if "edge_attr" in graph_data:
-            print(f"Subsized edge features: {graph_data['edge_attr']}")
-        print(f"Subsized scenarios: {graph_data['scenario']}")
-        print(f"Subsized labels: {graph_data['y']}")
-    
+            logger.info(f"Subsized edge features: {graph_data['edge_attr']}")
+        logger.info(f"Subsized scenarios: {graph_data['scenario']}")
+        logger.info(f"Subsized labels: {graph_data['y']}")
+
     graph_data = feature_extraction(graph_data, window_size, stride, subsample, features)
+    train_idx, val_idx, test_idx = train_val_test_split(graph_data['window_labels'], graph_data['window_scenarios'], logger, anomaly=False)
+    
+    graph_data['train_idx'] = train_idx
+    graph_data['val_idx'] = val_idx
+    graph_data['test_idx'] = test_idx
+    node_features = graph_data['node_features']
+    
+    train_node_features = node_features[train_idx]
+    val_node_features = node_features[val_idx]
+    test_node_features = node_features[test_idx]
+    
+    logger.info("Normalizing data...")
+    x_train, x_val, x_test = normalize_data(train_node_features, val_node_features, test_node_features)
+    node_features[train_idx] = x_train
+    node_features[val_idx] = x_val
+    node_features[test_idx] = x_test
+    
+    if "edge_attr" in graph_data:
+        logger.info("Normalizing edge features...")
+        edge_features = graph_data['edge_features']
+        train_edge_features = edge_features[train_idx]
+        val_edge_features = edge_features[val_idx]
+        test_edge_features = edge_features[test_idx]
+        
+        x_train, x_val, x_test = normalize_data(train_edge_features, val_edge_features, test_edge_features)
+        edge_features[train_idx] = x_train
+        edge_features[val_idx] = x_val
+        edge_features[test_idx] = x_test
+        
+        graph_data['edge_features'] = edge_features
+    
+    if fuzzy:
+        graph_data = fuzzify(graph_data, fuzzy, logger)
     
     if doublewindow_size is not None:
-        print(f"\nMaking double windows of size {doublewindow_size}")
+        logger.info(f"\nMaking double windows of size {doublewindow_size}")
         graph_data['node_features'] = sliding_window(graph_data['node_features'], doublewindow_size)
         if "edge_features" in graph_data:
             graph_data['edge_features'] = sliding_window(graph_data['edge_features'], doublewindow_size)
-        print("New node features:")
-        print(graph_data['node_features'])
+        logger.info("New node features:")
+        logger.info(graph_data['node_features'])
         if "edge_features" in graph_data:
-            print("New edge features:")
-            print(graph_data['edge_features'])
+            logger.info("New edge features:")
+            logger.info(graph_data['edge_features'])
     
-    print("\nSaving processed data...")
-    double_string = "" if doublewindow_size is None else f"_2W{doublewindow_size}"
-    subsize_string = "" if subsize is None else f"_SUBSIZE{subsize}"
-    data_name = f"data/processed_data_W{window_size}{double_string}_S{subsample}_STRIDE{stride}{subsize_string}{suffix}.pt"
+    logger.info("\nSaving processed data...")
     torch.save(graph_data, data_name)
-    print(f"Data saved successfully to {data_name}")
+    logger.info(f"Data saved successfully to {data_name}")
     
     
 if __name__ == "__main__":
