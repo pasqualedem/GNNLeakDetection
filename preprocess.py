@@ -308,6 +308,32 @@ class Fuzzifier:
         return u / torch.sum(u, axis=1, keepdims=True)
     
     
+class NormalizedFuzzifier:
+    def __init__(self, n_clusters, n_features, X_train):
+        assert n_features == 1, "NormalizedFuzzifier only supports a single feature for now"
+        self.n_clusters = n_clusters
+        self.X_train = X_train  # Store training data
+
+        # Calculate the range for the feature and partition it into 'n_clusters'
+        input_range = (X_train.min(), X_train.max())
+        partition_width = (input_range[1] - input_range[0]) / (n_clusters - 1)
+
+        # Define cluster centers and standard deviations (for simplicity, using equal widths)
+        self.cluster_centers = np.array([input_range[0] + i * partition_width for i in range(n_clusters)])
+        self.std_devs = np.array([partition_width / 3 for _ in range(n_clusters)])
+
+    def fuzzify(self, X):
+        """
+        Fuzzifies the input data X using grid partitioning for a single feature.
+        Each feature's range is divided into 'n_clusters' partitions with a Gaussian membership function.
+        """
+        u = np.zeros((X.shape[0], self.n_clusters))
+
+        # Calculate membership values for each partition (using Gaussian membership functions)
+        for i in range(self.n_clusters):
+            u[:, i] = np.exp(-0.5 * ((X[:, 0] - self.cluster_centers[i]) / self.std_devs[i]) ** 2)
+        return u
+    
 def fuzzify(graph_data, params, logger):
     n_clusters = params['n_clusters']
     logger.info(f"Fuzzifying with {n_clusters} clusters")
@@ -320,8 +346,11 @@ def fuzzify(graph_data, params, logger):
     
     train_idx = graph_data['train_idx']
     x_train = node_features[train_idx]
+    logger.info(f"x_train: {x_train}")
     
-    fuzzifier = Fuzzifier(n_clusters, n_features, x_train)
+    fuzzifier_cls = NormalizedFuzzifier if params.get('fuzzifier', None) == 'normalized' else Fuzzifier
+    logger.info(f"Using fuzzifier: {fuzzifier_cls}")
+    fuzzifier = fuzzifier_cls(n_clusters, n_features, x_train)
     logger.info(f"Node Cluster centers: {fuzzifier.cluster_centers}")
     logger.info(f"Node Std Devs       : {fuzzifier.std_devs}")
     

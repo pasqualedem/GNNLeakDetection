@@ -95,6 +95,7 @@ def train(trial_dir, model, loss_fn, train_loader, val_batch, max_epochs, optimi
     bar_update_interval = 10
     accuracy, f1score = Accuracy(task="binary"), F1Score(task="binary")
     for epoch in range(max_epochs):
+        tracker.log_metrics({"epoch": epoch})
         print(f"Epoch {epoch}")
         epoch_loss = 0
         model.train()
@@ -133,6 +134,7 @@ def train(trial_dir, model, loss_fn, train_loader, val_batch, max_epochs, optimi
         if stop:
             break
         epoch_loss /= len(train_loader)
+        tracker.log_metrics({"epoch_loss": epoch_loss})
         tracker.info(
             f"Epoch {epoch:04d}: Train Loss {epoch_loss:.4f}, Val Loss {val_loss:.4f}. {best}"
         )
