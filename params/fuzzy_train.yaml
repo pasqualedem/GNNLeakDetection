@@ -22,7 +22,8 @@ loss: ["binary_cross_entropy"]
 # data_path: ["data/processed_doublewindowed_data_W48W4_S1_STRIDE24.pt"],
 # data_path: ["data/processed_doublewindowed_data_W256W4_S1_STRIDE128.pt"]
 # data_path: ["data/processed_doublewindowed_olddata_W24W4_S1_STRIDE12.pt"]
-data_path: ["data/fuzzified_data_W24_S1_STRIDE12old.pt"]
+data_path: ["data/fuzzified_data_W24_S1_STRIDE12old_norm.pt"]
+# data_path: ["data/fuzzified_data_W24_S1_STRIDE12old.pt", "data/fuzzified_data_W24_S1_STRIDE12old_norm.pt"]
 ##
 tracker:
   project: ["FuzzyGNNLeak"]

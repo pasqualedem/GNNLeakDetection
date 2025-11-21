@@ -319,19 +319,19 @@ class NormalizedFuzzifier:
         partition_width = (input_range[1] - input_range[0]) / (n_clusters - 1)
 
         # Define cluster centers and standard deviations (for simplicity, using equal widths)
-        self.cluster_centers = np.array([input_range[0] + i * partition_width for i in range(n_clusters)])
-        self.std_devs = np.array([partition_width / 3 for _ in range(n_clusters)])
+        self.cluster_centers = torch.tensor([input_range[0] + i * partition_width for i in range(n_clusters)])
+        self.std_devs = torch.tensor([partition_width / 3 for _ in range(n_clusters)])
 
     def fuzzify(self, X):
         """
         Fuzzifies the input data X using grid partitioning for a single feature.
         Each feature's range is divided into 'n_clusters' partitions with a Gaussian membership function.
         """
-        u = np.zeros((X.shape[0], self.n_clusters))
+        u = torch.zeros((X.shape[0], self.n_clusters))
 
         # Calculate membership values for each partition (using Gaussian membership functions)
         for i in range(self.n_clusters):
-            u[:, i] = np.exp(-0.5 * ((X[:, 0] - self.cluster_centers[i]) / self.std_devs[i]) ** 2)
+            u[:, i] = torch.exp(-0.5 * ((X[:, 0] - self.cluster_centers[i]) / self.std_devs[i]) ** 2)
         return u
     
 def fuzzify(graph_data, params, logger):
@@ -443,27 +443,27 @@ def main(parameters):
     graph_data['test_idx'] = test_idx
     node_features = graph_data['node_features']
     
-    train_node_features = node_features[train_idx]
-    val_node_features = node_features[val_idx]
-    test_node_features = node_features[test_idx]
-    
+    train_node_features = einops.rearrange(node_features[train_idx], " b (f n) -> (b n) f", n=num_nodes)
+    val_node_features = einops.rearrange(node_features[val_idx], " b (f n) -> (b n) f", n=num_nodes)
+    test_node_features = einops.rearrange(node_features[test_idx], " b (f n) -> (b n) f", n=num_nodes)
+        
     logger.info("Normalizing data...")
     x_train, x_val, x_test = normalize_data(train_node_features, val_node_features, test_node_features)
-    node_features[train_idx] = x_train
-    node_features[val_idx] = x_val
-    node_features[test_idx] = x_test
+    node_features[train_idx] = einops.rearrange(x_train, "(b n) f -> b (f n)", n=num_nodes)
+    node_features[val_idx] = einops.rearrange(x_val, "(b n) f -> b (f n)", n=num_nodes)
+    node_features[test_idx] = einops.rearrange(x_test, "(b n) f -> b (f n)", n=num_nodes)
     
     if "edge_attr" in graph_data:
         logger.info("Normalizing edge features...")
         edge_features = graph_data['edge_features']
-        train_edge_features = edge_features[train_idx]
-        val_edge_features = edge_features[val_idx]
-        test_edge_features = edge_features[test_idx]
+        train_edge_features = einops.rearrange(edge_features[train_idx], " b (f n) -> (b n) f", n=num_edges)
+        val_edge_features = einops.rearrange(edge_features[val_idx], " b (f n) -> (b n) f", n=num_edges)
+        test_edge_features = einops.rearrange(edge_features[test_idx], " b (f n) -> (b n) f", n=num_edges)
         
         x_train, x_val, x_test = normalize_data(train_edge_features, val_edge_features, test_edge_features)
-        edge_features[train_idx] = x_train
-        edge_features[val_idx] = x_val
-        edge_features[test_idx] = x_test
+        edge_features[train_idx] = einops.rearrange(x_train, "(b n) f -> b (f n)", n=num_edges)
+        edge_features[val_idx] = einops.rearrange(x_val, "(b n) f -> b (f n)", n=num_edges)
+        edge_features[test_idx] = einops.rearrange(x_test, "(b n) f -> b (f n)", n=num_edges)
         
         graph_data['edge_features'] = edge_features
     
